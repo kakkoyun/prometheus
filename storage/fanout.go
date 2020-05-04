@@ -256,6 +256,10 @@ func NewMergeChunkQuerier(primaryQuerier ChunkQuerier, queriers []ChunkQuerier, 
 	}}
 }
 
+func (q *mergeGenericQuerier) NewManager() SelectManager {
+	return NewSequentialSelectManager()
+}
+
 // Select returns a set of series that matches the given label matchers.
 func (q *mergeGenericQuerier) Select(sortSeries bool, hints *SelectHints, matchers ...*labels.Matcher) (genericSeriesSet, Warnings, error) {
 	if len(q.queriers) == 1 {

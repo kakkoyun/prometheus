@@ -169,6 +169,10 @@ func (errStorage) Close() error {
 
 type errQuerier struct{}
 
+func (errQuerier) NewManager() storage.QueryManager {
+	return storage.NewSequentialQueryManager()
+}
+
 func (errQuerier) Select(bool, *storage.SelectHints, ...*labels.Matcher) (storage.SeriesSet, storage.Warnings, error) {
 	return nil, nil, errSelect
 }

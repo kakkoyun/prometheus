@@ -175,6 +175,10 @@ type errQuerier struct {
 	err error
 }
 
+func (q *errQuerier) NewManager() storage.QueryManager {
+	return storage.NewSequentialQueryManager()
+}
+
 func (q *errQuerier) Select(bool, *storage.SelectHints, ...*labels.Matcher) (storage.SeriesSet, storage.Warnings, error) {
 	return errSeriesSet{err: q.err}, nil, q.err
 }
@@ -232,6 +236,10 @@ type hintCheckerQuerier struct {
 	function string
 
 	t *testing.T
+}
+
+func (q *hintCheckerQuerier) NewManager() storage.QueryManager {
+	return storage.NewSequentialQueryManager()
 }
 
 func (q *hintCheckerQuerier) Select(_ bool, sp *storage.SelectHints, _ ...*labels.Matcher) (storage.SeriesSet, storage.Warnings, error) {

@@ -85,6 +85,10 @@ func (q *querier) lvals(qs []storage.Querier, n string) ([]string, storage.Warni
 	return mergeStrings(s1, s2), ws, nil
 }
 
+func (q *querier) NewManager() storage.SelectManager {
+	return storage.NewSequentialSelectManager()
+}
+
 func (q *querier) Select(sortSeries bool, hints *storage.SelectHints, ms ...*labels.Matcher) (storage.SeriesSet, storage.Warnings, error) {
 	if len(q.blocks) == 0 {
 		return storage.EmptySeriesSet(), nil, nil
@@ -123,6 +127,10 @@ func (q *querier) Close() error {
 // a single partition. The block time ranges can be overlapping.
 type verticalQuerier struct {
 	querier
+}
+
+func (q *verticalQuerier) NewManager() storage.SelectManager {
+	return storage.NewSequentialSelectManager()
 }
 
 func (q *verticalQuerier) Select(sortSeries bool, hints *storage.SelectHints, ms ...*labels.Matcher) (storage.SeriesSet, storage.Warnings, error) {
@@ -187,6 +195,10 @@ type blockQuerier struct {
 	closed bool
 
 	mint, maxt int64
+}
+
+func (q *blockQuerier) NewManager() storage.SelectManager {
+	return storage.NewSequentialSelectManager()
 }
 
 func (q *blockQuerier) Select(sortSeries bool, hints *storage.SelectHints, ms ...*labels.Matcher) (storage.SeriesSet, storage.Warnings, error) {

@@ -654,13 +654,10 @@ func (ng *Engine) populateSeries(ctx context.Context, querier storage.Querier, s
 		// The evaluation of the VectorSelector inside then evaluates the given range and unsets
 		// the variable.
 		evalRange time.Duration
-		warnings  storage.Warnings
-		err       error
+		manager   = querier.NewManager()
 	)
 
 	parser.Inspect(s.Expr, func(node parser.Node, path []parser.Node) error {
-		var set storage.SeriesSet
-		var wrn storage.Warnings
 		hints := &storage.SelectHints{
 			Start: timestamp.FromTime(s.Start),
 			End:   timestamp.FromTime(s.End),
@@ -695,20 +692,26 @@ func (ng *Engine) populateSeries(ctx context.Context, querier storage.Querier, s
 				hints.End = hints.End - offsetMilliseconds
 			}
 
-			set, wrn, err = querier.Select(false, hints, n.LabelMatchers...)
-			warnings = append(warnings, wrn...)
-			if err != nil {
-				level.Error(ng.logger).Log("msg", "error selecting series set", "err", err)
+			if err := manager.Add(func() (storage.Warnings, error) {
+				set, wrn, err := querier.Select(false, hints, n.LabelMatchers...)
+				if err != nil {
+					level.Error(ng.logger).Log("msg", "error selecting series set", "err", err)
+					return wrn, err
+				}
+				n.UnexpandedSeriesSet = set
+
+				return wrn, nil
+			}); err != nil {
+				level.Error(ng.logger).Log("msg", "error submitting series set for select", "err", err)
 				return err
 			}
-			n.UnexpandedSeriesSet = set
-
 		case *parser.MatrixSelector:
 			evalRange = n.Range
 		}
 		return nil
 	})
-	return warnings, err
+
+	return manager.Run(ctx)
 }
 
 // extractFuncFromPath walks up the path and searches for the first instance of

@@ -58,9 +58,21 @@ type Queryable interface {
 	Querier(ctx context.Context, mint, maxt int64) (Querier, error)
 }
 
+// A SelectManager handles execution of the queries against a Querier.
+type SelectManager interface {
+	// Add adds given select request to manager.
+	Add(selectRequest func() (Warnings, error)) error
+
+	// Run processes the aggregated requests. Should only be called once.
+	Run(ctx context.Context) (Warnings, error)
+}
+
 // Querier provides querying access over time series data of a fixed time range.
 type Querier interface {
 	baseQuerier
+
+	// NewManager returns a new SelectManager.
+	NewManager() SelectManager
 
 	// Select returns a set of series that matches the given label matchers.
 	// Caller can specify if it requires returned series to be sorted. Prefer not requiring sorting for better performance.
@@ -78,6 +90,9 @@ type ChunkQueryable interface {
 // ChunkQuerier provides querying access over time series data of a fixed time range.
 type ChunkQuerier interface {
 	baseQuerier
+
+	// NewManager returns a new SelectManager.
+	NewManager() SelectManager
 
 	// Select returns a set of series that matches the given label matchers.
 	// Caller can specify if it requires returned series to be sorted. Prefer not requiring sorting for better performance.

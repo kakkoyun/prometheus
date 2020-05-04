@@ -22,6 +22,8 @@ import (
 	"github.com/prometheus/prometheus/storage"
 )
 
+const defaultSelectConcurrencyLimit = 4
+
 var remoteReadQueries = prometheus.NewGaugeVec(
 	prometheus.GaugeOpts{
 		Namespace: namespace,
@@ -55,6 +57,10 @@ type querier struct {
 	ctx        context.Context
 	mint, maxt int64
 	client     *Client
+}
+
+func (q *querier) NewManager() storage.SelectManager {
+	return storage.NewConcurrentSelectManager(defaultSelectConcurrencyLimit)
 }
 
 // Select implements storage.Querier and uses the given matchers to read series sets from the Client.

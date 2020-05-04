@@ -16,10 +16,13 @@
 
 package storage
 
-import "github.com/prometheus/prometheus/pkg/labels"
+import (
+	"github.com/prometheus/prometheus/pkg/labels"
+)
 
 type genericQuerier interface {
 	baseQuerier
+	NewManager() SelectManager
 	Select(bool, *SelectHints, ...*labels.Matcher) (genericSeriesSet, Warnings, error)
 }
 
@@ -55,6 +58,10 @@ type genericQuerierAdapter struct {
 	cq ChunkQuerier
 }
 
+func (q *genericQuerierAdapter) NewManager() SelectManager {
+	return NewSequentialSelectManager()
+}
+
 func (q *genericQuerierAdapter) Select(sortSeries bool, hints *SelectHints, matchers ...*labels.Matcher) (genericSeriesSet, Warnings, error) {
 	if q.q != nil {
 		s, w, err := q.q.Select(sortSeries, hints, matchers...)
@@ -84,6 +91,10 @@ func (a *seriesSetAdapter) At() Series {
 	return a.genericSeriesSet.At().(Series)
 }
 
+func (q *querierAdapter) NewManager() SelectManager {
+	return NewSequentialSelectManager()
+}
+
 func (q *querierAdapter) Select(sortSeries bool, hints *SelectHints, matchers ...*labels.Matcher) (SeriesSet, Warnings, error) {
 	s, w, err := q.genericQuerier.Select(sortSeries, hints, matchers...)
 	return &seriesSetAdapter{s}, w, err
@@ -99,6 +110,10 @@ type chunkSeriesSetAdapter struct {
 
 func (a *chunkSeriesSetAdapter) At() ChunkSeries {
 	return a.genericSeriesSet.At().(ChunkSeries)
+}
+
+func (q *chunkQuerierAdapter) NewManager() SelectManager {
+	return NewSequentialSelectManager()
 }
 
 func (q *chunkQuerierAdapter) Select(sortSeries bool, hints *SelectHints, matchers ...*labels.Matcher) (ChunkSeriesSet, Warnings, error) {

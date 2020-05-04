@@ -24,6 +24,10 @@ func NoopQuerier() Querier {
 	return noopQuerier{}
 }
 
+func (noopQuerier) NewManager() SelectManager {
+	return NewSequentialSelectManager()
+}
+
 func (noopQuerier) Select(bool, *SelectHints, ...*labels.Matcher) (SeriesSet, Warnings, error) {
 	return NoopSeriesSet(), nil, nil
 }
@@ -45,6 +49,10 @@ type noopChunkQuerier struct{}
 // NoopChunkedQuerier is a ChunkQuerier that does nothing.
 func NoopChunkedQuerier() ChunkQuerier {
 	return noopChunkQuerier{}
+}
+
+func (noopChunkQuerier) NewManager() SelectManager {
+	return NewSequentialSelectManager()
 }
 
 func (noopChunkQuerier) Select(bool, *SelectHints, ...*labels.Matcher) (ChunkSeriesSet, Warnings, error) {
