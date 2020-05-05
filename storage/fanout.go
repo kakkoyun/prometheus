@@ -19,6 +19,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
@@ -262,46 +263,54 @@ func (q *mergeGenericQuerier) Select(sortSeries bool, hints *SelectHints, matche
 		return q.queriers[0].Select(sortSeries, hints, matchers...)
 	}
 
-	var (
-		seriesSets = make([]genericSeriesSet, 0, len(q.queriers))
-		warnings   Warnings
-		priErr     error
-	)
 	type queryResult struct {
-		qr          genericQuerier
-		set         genericSeriesSet
-		wrn         Warnings
-		selectError error
+		qr  genericQuerier
+		set genericSeriesSet
+		wrn Warnings
+		err error
 	}
-	queryResultChan := make(chan *queryResult)
+	var (
+		size         = len(q.queriers)
+		queryResults = make(chan *queryResult, size)
+		wg           sync.WaitGroup
+	)
 
+	wg.Add(size)
 	for _, querier := range q.queriers {
 		go func(qr genericQuerier) {
+			defer wg.Done()
 			// We need to sort for NewMergeSeriesSet to work.
 			set, wrn, err := qr.Select(true, hints, matchers...)
-			queryResultChan <- &queryResult{qr: qr, set: set, wrn: wrn, selectError: err}
+			queryResults <- &queryResult{qr: qr, set: set, wrn: wrn, err: err}
 		}(querier)
 	}
-	for i := 0; i < len(q.queriers); i++ {
-		qryResult := <-queryResultChan
-		q.setQuerierMap[qryResult.set] = qryResult.qr
-		if qryResult.wrn != nil {
-			warnings = append(warnings, qryResult.wrn...)
+	wg.Wait()
+	close(queryResults)
+
+	var (
+		seriesSets = make([]genericSeriesSet, 0, size)
+		warnings   Warnings
+		err        error
+	)
+	for res := range queryResults {
+		q.setQuerierMap[res.set] = res.qr
+		if res.wrn != nil {
+			warnings = append(warnings, res.wrn...)
 		}
-		if qryResult.selectError != nil {
-			q.failedQueriers[qryResult.qr] = struct{}{}
+		if res.err != nil {
+			q.failedQueriers[res.qr] = struct{}{}
 			// If the error source isn't the primary querier, return the error as a warning and continue.
-			if !reflect.DeepEqual(qryResult.qr, q.primaryQuerier) {
-				warnings = append(warnings, qryResult.selectError)
+			if !reflect.DeepEqual(res.qr, q.primaryQuerier) {
+				warnings = append(warnings, res.err)
 			} else {
-				priErr = qryResult.selectError
+				err = res.err
 			}
 			continue
 		}
-		seriesSets = append(seriesSets, qryResult.set)
+		seriesSets = append(seriesSets, res.set)
 	}
-	if priErr != nil {
-		return nil, nil, priErr
+	if err != nil {
+		return nil, nil, err
 	}
 	return newGenericMergeSeriesSet(seriesSets, q, q.mergeFunc), warnings, nil
 }

@@ -16,6 +16,7 @@ package tsdb
 import (
 	"sort"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/pkg/errors"
@@ -31,7 +32,8 @@ import (
 // querier aggregates querying results from time blocks within
 // a single partition.
 type querier struct {
-	blocks []storage.Querier
+	blocks   []storage.Querier
+	selectMu sync.Mutex
 }
 
 func (q *querier) LabelValues(n string) ([]string, storage.Warnings, error) {
@@ -86,6 +88,9 @@ func (q *querier) lvals(qs []storage.Querier, n string) ([]string, storage.Warni
 }
 
 func (q *querier) Select(sortSeries bool, hints *storage.SelectHints, ms ...*labels.Matcher) (storage.SeriesSet, storage.Warnings, error) {
+	q.selectMu.Lock()
+	defer q.selectMu.Unlock()
+
 	if len(q.blocks) == 0 {
 		return storage.EmptySeriesSet(), nil, nil
 	}
@@ -126,6 +131,9 @@ type verticalQuerier struct {
 }
 
 func (q *verticalQuerier) Select(sortSeries bool, hints *storage.SelectHints, ms ...*labels.Matcher) (storage.SeriesSet, storage.Warnings, error) {
+	q.selectMu.Lock()
+	defer q.selectMu.Unlock()
+
 	return q.sel(sortSeries, hints, q.blocks, ms)
 }
 
@@ -187,9 +195,14 @@ type blockQuerier struct {
 	closed bool
 
 	mint, maxt int64
+
+	selectMu sync.Mutex
 }
 
 func (q *blockQuerier) Select(sortSeries bool, hints *storage.SelectHints, ms ...*labels.Matcher) (storage.SeriesSet, storage.Warnings, error) {
+	q.selectMu.Lock()
+	defer q.selectMu.Unlock()
+
 	var base storage.DeprecatedChunkSeriesSet
 	var err error
 
