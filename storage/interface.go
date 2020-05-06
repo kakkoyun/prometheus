@@ -63,9 +63,14 @@ type Querier interface {
 	baseQuerier
 
 	// Select returns a set of series that matches the given label matchers.
+	// Returned SeriesSet should only be used after a call to Exec.
 	// Caller can specify if it requires returned series to be sorted. Prefer not requiring sorting for better performance.
 	// It allows passing hints that can help in optimising select, but it's up to implementation how this is used if used at all.
-	Select(sortSeries bool, hints *SelectHints, matchers ...*labels.Matcher) (SeriesSet, Warnings, error)
+	Select(sortSeries bool, hints *SelectHints, matchers ...*labels.Matcher) (SeriesSet, error)
+
+	// Exec processes scheduled selects and returns aggregated warnings and errors occurred while executing the Query.
+	// Can only be called once.
+	Exec() (Warnings, error)
 }
 
 // A ChunkQueryable handles queries against a storage.
@@ -82,7 +87,12 @@ type ChunkQuerier interface {
 	// Select returns a set of series that matches the given label matchers.
 	// Caller can specify if it requires returned series to be sorted. Prefer not requiring sorting for better performance.
 	// It allows passing hints that can help in optimising select, but it's up to implementation how this is used if used at all.
-	Select(sortSeries bool, hints *SelectHints, matchers ...*labels.Matcher) (ChunkSeriesSet, Warnings, error)
+	// Select(sortSeries bool, hints *SelectHints, matchers ...*labels.Matcher) (ChunkSeriesSet, Warnings, error)
+	Select(sortSeries bool, hints *SelectHints, matchers ...*labels.Matcher) (ChunkSeriesSet, error)
+
+	// Exec processes scheduled selects and returns aggregated warnings and errors occurred while executing the Query.
+	// Can only be called once.
+	Exec() (Warnings, error)
 }
 
 type baseQuerier interface {

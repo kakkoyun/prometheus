@@ -19,6 +19,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
@@ -91,7 +92,7 @@ func (f *fanout) Querier(ctx context.Context, mint, maxt int64) (Querier, error)
 		queriers = append(queriers, querier)
 	}
 
-	return NewMergeQuerier(primaryQuerier, queriers, ChainedSeriesMerge), nil
+	return NewMergeQuerier(ctx, primaryQuerier, queriers, ChainedSeriesMerge), nil
 }
 
 func (f *fanout) Appender() Appender {
@@ -188,12 +189,17 @@ func (f *fanoutAppender) Rollback() (err error) {
 }
 
 type mergeGenericQuerier struct {
+	ctx       context.Context
 	mergeFunc genericSeriesMergeFunc
 
 	primaryQuerier genericQuerier
 	queriers       []genericQuerier
 	failedQueriers map[genericQuerier]struct{}
 	setQuerierMap  map[genericSeriesSet]genericQuerier
+
+	wg       *sync.WaitGroup
+	warnings chan error
+	errors   chan error
 }
 
 // NewMergeQuerier returns a new Querier that merges results of chkQuerierSeries queriers.
@@ -202,7 +208,7 @@ type mergeGenericQuerier struct {
 // when only one querier is passed.
 // The difference between primary and secondary is as follows: f the primaryQuerier returns an error, query fails.
 // For secondaries it just return warnings.
-func NewMergeQuerier(primaryQuerier Querier, queriers []Querier, mergeFunc VerticalSeriesMergeFunc) Querier {
+func NewMergeQuerier(ctx context.Context, primaryQuerier Querier, queriers []Querier, mergeFunc VerticalSeriesMergeFunc) Querier {
 	filtered := make([]genericQuerier, 0, len(queriers))
 	for _, querier := range queriers {
 		if _, ok := querier.(noopQuerier); !ok && querier != nil {
@@ -215,10 +221,12 @@ func NewMergeQuerier(primaryQuerier Querier, queriers []Querier, mergeFunc Verti
 	}
 
 	if primaryQuerier == nil && len(filtered) == 1 {
-		return &querierAdapter{filtered[0]}
+		return &querierAdapter{genericQuerier: filtered[0]}
 	}
 
-	return &querierAdapter{&mergeGenericQuerier{
+	return &querierAdapter{genericQuerier: &mergeGenericQuerier{
+		ctx:            ctx,
+		wg:             &sync.WaitGroup{},
 		mergeFunc:      (&seriesMergerAdapter{VerticalSeriesMergeFunc: mergeFunc}).Merge,
 		primaryQuerier: newGenericQuerierFrom(primaryQuerier),
 		queriers:       filtered,
@@ -231,7 +239,7 @@ func NewMergeQuerier(primaryQuerier Querier, queriers []Querier, mergeFunc Verti
 // NewMergeChunkQuerier will return NoopChunkQuerier if no chunk queriers are passed to it,
 // and will filter NoopQuerieNoopChunkQuerierrs from its arguments, in order to reduce overhead
 // when only one chunk querier is passed.
-func NewMergeChunkQuerier(primaryQuerier ChunkQuerier, queriers []ChunkQuerier, merger VerticalChunkSeriesMergerFunc) ChunkQuerier {
+func NewMergeChunkQuerier(ctx context.Context, primaryQuerier ChunkQuerier, queriers []ChunkQuerier, merger VerticalChunkSeriesMergerFunc) ChunkQuerier {
 	filtered := make([]genericQuerier, 0, len(queriers))
 	for _, querier := range queriers {
 		if _, ok := querier.(noopChunkQuerier); !ok && querier != nil {
@@ -244,10 +252,12 @@ func NewMergeChunkQuerier(primaryQuerier ChunkQuerier, queriers []ChunkQuerier, 
 	}
 
 	if primaryQuerier == nil && len(filtered) == 1 {
-		return &chunkQuerierAdapter{filtered[0]}
+		return &chunkQuerierAdapter{genericQuerier: filtered[0]}
 	}
 
-	return &chunkQuerierAdapter{&mergeGenericQuerier{
+	return &chunkQuerierAdapter{genericQuerier: &mergeGenericQuerier{
+		ctx:            ctx,
+		wg:             &sync.WaitGroup{},
 		mergeFunc:      (&chunkSeriesMergerAdapter{VerticalChunkSeriesMergerFunc: merger}).Merge,
 		primaryQuerier: newGenericQuerierFromChunk(primaryQuerier),
 		queriers:       filtered,
@@ -257,53 +267,77 @@ func NewMergeChunkQuerier(primaryQuerier ChunkQuerier, queriers []ChunkQuerier, 
 }
 
 // Select returns a set of series that matches the given label matchers.
-func (q *mergeGenericQuerier) Select(sortSeries bool, hints *SelectHints, matchers ...*labels.Matcher) (genericSeriesSet, Warnings, error) {
+func (q *mergeGenericQuerier) Select(sortSeries bool, hints *SelectHints, matchers ...*labels.Matcher) (genericSeriesSet, error) {
 	if len(q.queriers) == 1 {
 		return q.queriers[0].Select(sortSeries, hints, matchers...)
 	}
 
-	var (
-		seriesSets = make([]genericSeriesSet, 0, len(q.queriers))
-		warnings   Warnings
-		priErr     error
-	)
 	type queryResult struct {
-		qr          genericQuerier
-		set         genericSeriesSet
-		wrn         Warnings
-		selectError error
+		qr  genericQuerier
+		set genericSeriesSet
+		err error
 	}
-	queryResultChan := make(chan *queryResult)
+	var (
+		qSize        = len(q.queriers)
+		queryResults = make(chan *queryResult, qSize)
+		wg           sync.WaitGroup
+	)
 
+	wg.Add(qSize)
 	for _, querier := range q.queriers {
 		go func(qr genericQuerier) {
+			defer wg.Done()
 			// We need to sort for NewMergeSeriesSet to work.
-			set, wrn, err := qr.Select(true, hints, matchers...)
-			queryResultChan <- &queryResult{qr: qr, set: set, wrn: wrn, selectError: err}
+			set, err := qr.Select(true, hints, matchers...)
+			queryResults <- &queryResult{qr: qr, set: set, err: err}
 		}(querier)
 	}
-	for i := 0; i < len(q.queriers); i++ {
-		qryResult := <-queryResultChan
-		q.setQuerierMap[qryResult.set] = qryResult.qr
-		if qryResult.wrn != nil {
-			warnings = append(warnings, qryResult.wrn...)
-		}
-		if qryResult.selectError != nil {
-			q.failedQueriers[qryResult.qr] = struct{}{}
-			// If the error source isn't the primary querier, return the error as a warning and continue.
-			if !reflect.DeepEqual(qryResult.qr, q.primaryQuerier) {
-				warnings = append(warnings, qryResult.selectError)
-			} else {
-				priErr = qryResult.selectError
+
+	q.wg.Add(1)
+	promise := make(chan genericSeriesSet, 1)
+	go func() {
+		defer q.wg.Done()
+		defer close(promise)
+
+		wg.Wait()
+		close(queryResults)
+
+		seriesSets := []genericSeriesSet{}
+		for res := range queryResults {
+			q.setQuerierMap[res.set] = res.qr
+			if res.err != nil {
+				q.failedQueriers[res.qr] = struct{}{}
+				// If the error source isn't the primary querier, return the error as a warning and continue.
+				if !reflect.DeepEqual(res.qr, q.primaryQuerier) {
+					q.warnings <- res.err
+				} else {
+					q.errors <- res.err
+				}
+				continue
 			}
-			continue
+			if res.set != nil {
+				seriesSets = append(seriesSets, res.set)
+			}
 		}
-		seriesSets = append(seriesSets, qryResult.set)
+		promise <- newGenericMergeSeriesSet(seriesSets, q, q.mergeFunc)
+	}()
+
+	return &genericLazySeriesSet{ctx: q.ctx, promise: promise}, nil
+}
+
+func (q *mergeGenericQuerier) Exec() (Warnings, error) {
+	q.wg.Wait()
+	close(q.warnings)
+	close(q.errors)
+
+	var ws Warnings
+	for w := range q.warnings {
+		ws = append(ws, w)
 	}
-	if priErr != nil {
-		return nil, nil, priErr
+	for err := range q.errors {
+		return ws, err
 	}
-	return newGenericMergeSeriesSet(seriesSets, q, q.mergeFunc), warnings, nil
+	return ws, nil
 }
 
 // LabelValues returns all potential values for a label name.

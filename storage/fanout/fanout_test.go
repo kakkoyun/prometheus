@@ -79,7 +79,10 @@ func TestSelectSorted(t *testing.T) {
 	matcher, err := labels.NewMatcher(labels.MatchEqual, model.MetricNameLabel, "a")
 	testutil.Ok(t, err)
 
-	seriesSet, _, err := querier.Select(true, nil, matcher)
+	seriesSet, err := querier.Select(true, nil, matcher)
+	testutil.Ok(t, err)
+
+	_, err = querier.Exec()
 	testutil.Ok(t, err)
 
 	result := make(map[int64]float64)
@@ -131,7 +134,10 @@ func TestFanoutErrors(t *testing.T) {
 		defer querier.Close()
 
 		matcher := labels.MustNewMatcher(labels.MatchEqual, "a", "b")
-		ss, warnings, err := querier.Select(true, nil, matcher)
+		ss, err := querier.Select(true, nil, matcher)
+		testutil.Ok(t, err)
+
+		warnings, err := querier.Exec()
 		testutil.Equals(t, tc.err, err)
 		testutil.Equals(t, tc.warnings, warnings)
 
@@ -169,8 +175,12 @@ func (errStorage) Close() error {
 
 type errQuerier struct{}
 
-func (errQuerier) Select(bool, *storage.SelectHints, ...*labels.Matcher) (storage.SeriesSet, storage.Warnings, error) {
-	return nil, nil, errSelect
+func (errQuerier) Select(bool, *storage.SelectHints, ...*labels.Matcher) (storage.SeriesSet, error) {
+	return nil, nil
+}
+
+func (errQuerier) Exec() (storage.Warnings, error) {
+	return nil, errSelect
 }
 
 func (errQuerier) LabelValues(name string) ([]string, storage.Warnings, error) {

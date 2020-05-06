@@ -89,7 +89,13 @@ func (h *Handler) federation(w http.ResponseWriter, req *http.Request) {
 
 	var sets []storage.SeriesSet
 	for _, mset := range matcherSets {
-		s, wrns, err := q.Select(false, hints, mset...)
+		s, err := q.Select(false, hints, mset...)
+		if err != nil {
+			federationErrors.Inc()
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		wrns, err := q.Exec()
 		if wrns != nil {
 			level.Debug(h.logger).Log("msg", "Federation select returned warnings", "warnings", wrns)
 			federationWarnings.Add(float64(len(wrns)))

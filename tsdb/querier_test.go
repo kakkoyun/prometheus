@@ -373,7 +373,10 @@ Outer:
 			maxt: c.maxt,
 		}
 
-		res, ws, err := querier.Select(false, nil, c.ms...)
+		res, err := querier.Select(false, nil, c.ms...)
+		testutil.Ok(t, err)
+
+		ws, err := querier.Exec()
 		testutil.Ok(t, err)
 		testutil.Equals(t, 0, len(ws))
 
@@ -536,7 +539,10 @@ Outer:
 			maxt: c.maxt,
 		}
 
-		res, ws, err := querier.Select(false, nil, c.ms...)
+		res, err := querier.Select(false, nil, c.ms...)
+		testutil.Ok(t, err)
+
+		ws, err := querier.Exec()
 		testutil.Ok(t, err)
 		testutil.Equals(t, 0, len(ws))
 
@@ -1654,7 +1660,7 @@ func BenchmarkQuerySeek(b *testing.B) {
 				b.ResetTimer()
 				b.ReportAllocs()
 
-				ss, ws, err := sq.Select(false, nil, labels.MustNewMatcher(labels.MatchRegexp, "__name__", ".*"))
+				ss, err := sq.Select(false, nil, labels.MustNewMatcher(labels.MatchRegexp, "__name__", ".*"))
 				for ss.Next() {
 					it := ss.At().Iterator()
 					for t := mint; t <= maxt; t++ {
@@ -1663,6 +1669,8 @@ func BenchmarkQuerySeek(b *testing.B) {
 					testutil.Ok(b, it.Err())
 				}
 				testutil.Ok(b, ss.Err())
+				testutil.Ok(b, err)
+				ws, err := sq.Exec()
 				testutil.Ok(b, err)
 				testutil.Equals(b, 0, len(ws))
 			})
@@ -1792,7 +1800,10 @@ func BenchmarkSetMatcher(b *testing.B) {
 			b.ResetTimer()
 			b.ReportAllocs()
 			for n := 0; n < b.N; n++ {
-				_, ws, err := que.Select(false, nil, labels.MustNewMatcher(labels.MatchRegexp, "test", c.pattern))
+				_, err := que.Select(false, nil, labels.MustNewMatcher(labels.MatchRegexp, "test", c.pattern))
+				testutil.Ok(b, err)
+
+				ws, err := que.Exec()
 				testutil.Ok(b, err)
 				testutil.Equals(b, 0, len(ws))
 			}
@@ -2241,7 +2252,10 @@ func benchQuery(b *testing.B, expExpansions int, q storage.Querier, selectors la
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		ss, ws, err := q.Select(false, nil, selectors...)
+		ss, err := q.Select(false, nil, selectors...)
+		testutil.Ok(b, err)
+
+		ws, err := q.Exec()
 		testutil.Ok(b, err)
 		testutil.Equals(b, 0, len(ws))
 		var actualExpansions int

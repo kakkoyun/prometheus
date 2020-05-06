@@ -24,8 +24,12 @@ func NoopQuerier() Querier {
 	return noopQuerier{}
 }
 
-func (noopQuerier) Select(bool, *SelectHints, ...*labels.Matcher) (SeriesSet, Warnings, error) {
-	return NoopSeriesSet(), nil, nil
+func (noopQuerier) Select(bool, *SelectHints, ...*labels.Matcher) (SeriesSet, error) {
+	return NoopSeriesSet(), nil
+}
+
+func (noopQuerier) Exec() (Warnings, error) {
+	return nil, nil
 }
 
 func (noopQuerier) LabelValues(string) ([]string, Warnings, error) {
@@ -47,8 +51,12 @@ func NoopChunkedQuerier() ChunkQuerier {
 	return noopChunkQuerier{}
 }
 
-func (noopChunkQuerier) Select(bool, *SelectHints, ...*labels.Matcher) (ChunkSeriesSet, Warnings, error) {
-	return NoopChunkedSeriesSet(), nil, nil
+func (noopChunkQuerier) Select(bool, *SelectHints, ...*labels.Matcher) (ChunkSeriesSet, error) {
+	return NoopChunkedSeriesSet(), nil
+}
+
+func (noopChunkQuerier) Exec() (Warnings, error) {
+	return nil, nil
 }
 
 func (noopChunkQuerier) LabelValues(string) ([]string, Warnings, error) {

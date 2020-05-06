@@ -32,6 +32,8 @@ import (
 // a single partition.
 type querier struct {
 	blocks []storage.Querier
+	ws     storage.Warnings
+	err    error
 }
 
 func (q *querier) LabelValues(n string) ([]string, storage.Warnings, error) {
@@ -85,9 +87,9 @@ func (q *querier) lvals(qs []storage.Querier, n string) ([]string, storage.Warni
 	return mergeStrings(s1, s2), ws, nil
 }
 
-func (q *querier) Select(sortSeries bool, hints *storage.SelectHints, ms ...*labels.Matcher) (storage.SeriesSet, storage.Warnings, error) {
+func (q *querier) Select(sortSeries bool, hints *storage.SelectHints, ms ...*labels.Matcher) (storage.SeriesSet, error) {
 	if len(q.blocks) == 0 {
-		return storage.EmptySeriesSet(), nil, nil
+		return storage.EmptySeriesSet(), nil
 	}
 	if len(q.blocks) == 1 {
 		// Sorting Head series is slow, and unneeded when only the
@@ -96,18 +98,33 @@ func (q *querier) Select(sortSeries bool, hints *storage.SelectHints, ms ...*lab
 	}
 
 	ss := make([]storage.SeriesSet, len(q.blocks))
-	var ws storage.Warnings
 	for i, b := range q.blocks {
 		// We have to sort if blocks > 1 as MergedSeriesSet requires it.
-		s, w, err := b.Select(true, hints, ms...)
-		ws = append(ws, w...)
+		s, err := b.Select(true, hints, ms...)
 		if err != nil {
-			return nil, ws, err
+			if q.err == nil {
+				q.err = err
+			}
+			return nil, err
 		}
 		ss[i] = s
 	}
 
-	return NewMergedSeriesSet(ss), ws, nil
+	return NewMergedSeriesSet(ss), nil
+}
+
+func (q *querier) Exec() (storage.Warnings, error) {
+	for _, b := range q.blocks {
+		w, err := b.Exec()
+		q.ws = append(q.ws, w...)
+		if err != nil {
+			if q.err == nil {
+				q.err = err
+			}
+			return q.ws, q.err
+		}
+	}
+	return q.ws, q.err
 }
 
 func (q *querier) Close() error {
@@ -125,31 +142,28 @@ type verticalQuerier struct {
 	querier
 }
 
-func (q *verticalQuerier) Select(sortSeries bool, hints *storage.SelectHints, ms ...*labels.Matcher) (storage.SeriesSet, storage.Warnings, error) {
+func (q *verticalQuerier) Select(sortSeries bool, hints *storage.SelectHints, ms ...*labels.Matcher) (storage.SeriesSet, error) {
 	return q.sel(sortSeries, hints, q.blocks, ms)
 }
 
-func (q *verticalQuerier) sel(sortSeries bool, hints *storage.SelectHints, qs []storage.Querier, ms []*labels.Matcher) (storage.SeriesSet, storage.Warnings, error) {
+func (q *verticalQuerier) sel(sortSeries bool, hints *storage.SelectHints, qs []storage.Querier, ms []*labels.Matcher) (storage.SeriesSet, error) {
 	if len(qs) == 0 {
-		return storage.EmptySeriesSet(), nil, nil
+		return storage.EmptySeriesSet(), nil
 	}
 	if len(qs) == 1 {
 		return qs[0].Select(sortSeries, hints, ms...)
 	}
 	l := len(qs) / 2
 
-	var ws storage.Warnings
-	a, w, err := q.sel(sortSeries, hints, qs[:l], ms)
-	ws = append(ws, w...)
+	a, err := q.sel(sortSeries, hints, qs[:l], ms)
 	if err != nil {
-		return nil, ws, err
+		return nil, err
 	}
-	b, w, err := q.sel(sortSeries, hints, qs[l:], ms)
-	ws = append(ws, w...)
+	b, err := q.sel(sortSeries, hints, qs[l:], ms)
 	if err != nil {
-		return nil, ws, err
+		return nil, err
 	}
-	return newMergedVerticalSeriesSet(a, b), ws, nil
+	return newMergedVerticalSeriesSet(a, b), nil
 }
 
 // NewBlockQuerier returns a querier against the reader.
@@ -187,9 +201,11 @@ type blockQuerier struct {
 	closed bool
 
 	mint, maxt int64
+
+	err error
 }
 
-func (q *blockQuerier) Select(sortSeries bool, hints *storage.SelectHints, ms ...*labels.Matcher) (storage.SeriesSet, storage.Warnings, error) {
+func (q *blockQuerier) Select(sortSeries bool, hints *storage.SelectHints, ms ...*labels.Matcher) (storage.SeriesSet, error) {
 	var base storage.DeprecatedChunkSeriesSet
 	var err error
 
@@ -199,7 +215,10 @@ func (q *blockQuerier) Select(sortSeries bool, hints *storage.SelectHints, ms ..
 		base, err = LookupChunkSeries(q.index, q.tombstones, ms...)
 	}
 	if err != nil {
-		return nil, nil, err
+		if q.err == nil {
+			q.err = err
+		}
+		return nil, err
 	}
 
 	mint := q.mint
@@ -218,7 +237,11 @@ func (q *blockQuerier) Select(sortSeries bool, hints *storage.SelectHints, ms ..
 
 		mint: mint,
 		maxt: maxt,
-	}, nil, nil
+	}, nil
+}
+
+func (q *blockQuerier) Exec() (storage.Warnings, error) {
+	return nil, q.err
 }
 
 func (q *blockQuerier) LabelValues(name string) ([]string, storage.Warnings, error) {

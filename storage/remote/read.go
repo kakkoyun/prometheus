@@ -16,6 +16,7 @@ package remote
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/prometheus/pkg/labels"
@@ -46,8 +47,42 @@ func QueryableClient(c *Client) storage.Queryable {
 			mint:   mint,
 			maxt:   maxt,
 			client: c,
+			wg:     &sync.WaitGroup{},
 		}, nil
 	})
+}
+
+type lazySeriesSet struct {
+	ctx     context.Context
+	result  storage.SeriesSet
+	promise chan storage.SeriesSet
+}
+
+func (s *lazySeriesSet) Next() bool {
+	if s.result == nil {
+		select {
+		case <-s.ctx.Done():
+			return false
+		case res, ok := <-s.promise:
+			if !ok {
+				return false
+			}
+			s.result = res
+			return res.Next()
+		}
+	}
+	return s.result.Next()
+}
+
+func (s *lazySeriesSet) At() storage.Series {
+	return s.result.At()
+}
+
+func (s *lazySeriesSet) Err() error {
+	if s.ctx.Err() != nil {
+		return s.ctx.Err()
+	}
+	return s.result.Err()
 }
 
 // querier is an adapter to make a Client usable as a storage.Querier.
@@ -55,25 +90,51 @@ type querier struct {
 	ctx        context.Context
 	mint, maxt int64
 	client     *Client
+	wg         *sync.WaitGroup
+	errors     chan error
+	err        error
 }
 
 // Select implements storage.Querier and uses the given matchers to read series sets from the Client.
-func (q *querier) Select(sortSeries bool, hints *storage.SelectHints, matchers ...*labels.Matcher) (storage.SeriesSet, storage.Warnings, error) {
+func (q *querier) Select(sortSeries bool, hints *storage.SelectHints, matchers ...*labels.Matcher) (storage.SeriesSet, error) {
 	query, err := ToQuery(q.mint, q.maxt, matchers, hints)
 	if err != nil {
-		return nil, nil, err
+		if q.err == nil {
+			q.err = err
+		}
+		return nil, err
 	}
 
 	remoteReadGauge := remoteReadQueries.WithLabelValues(q.client.remoteName, q.client.url.String())
-	remoteReadGauge.Inc()
-	defer remoteReadGauge.Dec()
+	promise := make(chan storage.SeriesSet, 1)
+	q.wg.Add(1)
+	go func() {
+		defer q.wg.Done()
+		defer close(promise)
 
-	res, err := q.client.Read(q.ctx, query)
-	if err != nil {
-		return nil, nil, fmt.Errorf("remote_read: %v", err)
+		remoteReadGauge.Inc()
+		defer remoteReadGauge.Dec()
+
+		res, err := q.client.Read(q.ctx, query)
+		if err != nil {
+			q.errors <- fmt.Errorf("remote_read: %v", err)
+		}
+		promise <- FromQueryResult(sortSeries, res)
+	}()
+
+	return &lazySeriesSet{ctx: q.ctx, promise: promise}, nil
+}
+
+func (q *querier) Exec() (storage.Warnings, error) {
+	q.wg.Wait()
+	close(q.errors)
+	for err := range q.errors {
+		if q.err == nil {
+			q.err = err
+			break
+		}
 	}
-
-	return FromQueryResult(sortSeries, res), nil, nil
+	return nil, q.err
 }
 
 // LabelValues implements storage.Querier and is a noop.
@@ -111,18 +172,26 @@ type externalLabelsQuerier struct {
 	storage.Querier
 
 	externalLabels labels.Labels
+	err            error
 }
 
 // Select adds equality matchers for all external labels to the list of matchers
 // before calling the wrapped storage.Queryable. The added external labels are
 // removed from the returned series sets.
-func (q externalLabelsQuerier) Select(sortSeries bool, hints *storage.SelectHints, matchers ...*labels.Matcher) (storage.SeriesSet, storage.Warnings, error) {
+func (q externalLabelsQuerier) Select(sortSeries bool, hints *storage.SelectHints, matchers ...*labels.Matcher) (storage.SeriesSet, error) {
 	m, added := q.addExternalLabels(matchers)
-	s, warnings, err := q.Querier.Select(sortSeries, hints, m...)
+	s, err := q.Querier.Select(sortSeries, hints, m...)
 	if err != nil {
-		return nil, warnings, err
+		if q.err == nil {
+			q.err = err
+		}
+		return nil, err
 	}
-	return newSeriesSetFilter(s, added), warnings, nil
+	return newSeriesSetFilter(s, added), nil
+}
+
+func (q externalLabelsQuerier) Exec() (storage.Warnings, error) {
+	return nil, q.err
 }
 
 // PreferLocalStorageFilter returns a QueryableFunc which creates a NoopQuerier
@@ -165,11 +234,12 @@ type requiredMatchersQuerier struct {
 	storage.Querier
 
 	requiredMatchers []*labels.Matcher
+	err              error
 }
 
 // Select returns a NoopSeriesSet if the given matchers don't match the label
 // set of the requiredMatchersQuerier. Otherwise it'll call the wrapped querier.
-func (q requiredMatchersQuerier) Select(sortSeries bool, hints *storage.SelectHints, matchers ...*labels.Matcher) (storage.SeriesSet, storage.Warnings, error) {
+func (q requiredMatchersQuerier) Select(sortSeries bool, hints *storage.SelectHints, matchers ...*labels.Matcher) (storage.SeriesSet, error) {
 	ms := q.requiredMatchers
 	for _, m := range matchers {
 		for i, r := range ms {
@@ -183,9 +253,13 @@ func (q requiredMatchersQuerier) Select(sortSeries bool, hints *storage.SelectHi
 		}
 	}
 	if len(ms) > 0 {
-		return storage.NoopSeriesSet(), nil, nil
+		return storage.NoopSeriesSet(), nil
 	}
 	return q.Querier.Select(sortSeries, hints, matchers...)
+}
+
+func (q requiredMatchersQuerier) Exec() (storage.Warnings, error) {
+	return nil, q.err
 }
 
 // addExternalLabels adds matchers for each external label. External labels

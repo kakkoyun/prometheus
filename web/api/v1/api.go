@@ -565,7 +565,11 @@ func (api *API) series(r *http.Request) (result apiFuncResult) {
 	var sets []storage.SeriesSet
 	var warnings storage.Warnings
 	for _, mset := range matcherSets {
-		s, wrn, err := q.Select(false, nil, mset...)
+		s, err := q.Select(false, nil, mset...)
+		if err != nil {
+			return apiFuncResult{nil, &apiError{errorExec, err}, warnings, closer}
+		}
+		wrn, err := q.Exec()
 		warnings = append(warnings, wrn...)
 		if err != nil {
 			return apiFuncResult{nil, &apiError{errorExec, err}, warnings, closer}
@@ -1197,8 +1201,11 @@ func (api *API) remoteRead(w http.ResponseWriter, r *http.Request) {
 		for i, query := range req.Queries {
 			err := api.remoteReadQuery(ctx, query, externalLabels, func(querier storage.Querier, hints *storage.SelectHints, filteredMatchers []*labels.Matcher) error {
 				// The streaming API has to provide the series sorted.
-				set, _, err := querier.Select(true, hints, filteredMatchers...)
+				set, err := querier.Select(true, hints, filteredMatchers...)
 				if err != nil {
+					return err
+				}
+				if _, err = querier.Exec(); err != nil {
 					return err
 				}
 
@@ -1229,8 +1236,11 @@ func (api *API) remoteRead(w http.ResponseWriter, r *http.Request) {
 		}
 		for i, query := range req.Queries {
 			err := api.remoteReadQuery(ctx, query, externalLabels, func(querier storage.Querier, hints *storage.SelectHints, filteredMatchers []*labels.Matcher) error {
-				set, _, err := querier.Select(false, hints, filteredMatchers...)
+				set, err := querier.Select(false, hints, filteredMatchers...)
 				if err != nil {
+					return err
+				}
+				if _, err = querier.Exec(); err != nil {
 					return err
 				}
 
