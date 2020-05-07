@@ -195,7 +195,7 @@ func TestMergeQuerierWithChainMerger(t *testing.T) {
 			}
 			qs = append(qs, tc.extraQueriers...)
 
-			merged, _, _ := NewMergeQuerier(qs[0], qs, ChainedSeriesMerge).Select(false, nil)
+			merged := NewMergeQuerier(qs[0], qs, ChainedSeriesMerge).Select(false, nil)
 			for merged.Next() {
 				testutil.Assert(t, tc.expected.Next(), "Expected Next() to be true")
 				actualSeries := merged.At()
@@ -346,7 +346,7 @@ func TestMergeChunkQuerierWithNoVerticalChunkSeriesMerger(t *testing.T) {
 			}
 			qs = append(qs, tc.extraQueriers...)
 
-			merged, _, _ := NewMergeChunkQuerier(qs[0], qs, NewVerticalChunkSeriesMerger(nil)).Select(false, nil)
+			merged := NewMergeChunkQuerier(qs[0], qs, NewVerticalChunkSeriesMerger(nil)).Select(false, nil)
 			for merged.Next() {
 				testutil.Assert(t, tc.expected.Next(), "Expected Next() to be true")
 				actualSeries := merged.At()
@@ -377,14 +377,14 @@ func (a seriesByLabel) Len() int           { return len(a) }
 func (a seriesByLabel) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a seriesByLabel) Less(i, j int) bool { return labels.Compare(a[i].Labels(), a[j].Labels()) < 0 }
 
-func (m *mockQuerier) Select(sortSeries bool, _ *SelectHints, _ ...*labels.Matcher) (SeriesSet, Warnings, error) {
+func (m *mockQuerier) Select(sortSeries bool, _ *SelectHints, _ ...*labels.Matcher) SeriesSet {
 	cpy := make([]Series, len(m.toReturn))
 	copy(cpy, m.toReturn)
 	if sortSeries {
 		sort.Sort(seriesByLabel(cpy))
 	}
 
-	return NewMockSeriesSet(cpy...), nil, nil
+	return NewMockSeriesSet(cpy...)
 }
 
 type mockChunkQurier struct {
@@ -401,14 +401,14 @@ func (a chunkSeriesByLabel) Less(i, j int) bool {
 	return labels.Compare(a[i].Labels(), a[j].Labels()) < 0
 }
 
-func (m *mockChunkQurier) Select(sortSeries bool, _ *SelectHints, _ ...*labels.Matcher) (ChunkSeriesSet, Warnings, error) {
+func (m *mockChunkQurier) Select(sortSeries bool, _ *SelectHints, _ ...*labels.Matcher) ChunkSeriesSet {
 	cpy := make([]ChunkSeries, len(m.toReturn))
 	copy(cpy, m.toReturn)
 	if sortSeries {
 		sort.Sort(chunkSeriesByLabel(cpy))
 	}
 
-	return NewMockChunkSeriesSet(cpy...), nil, nil
+	return NewMockChunkSeriesSet(cpy...)
 }
 
 type mockSeriesSet struct {
