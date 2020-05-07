@@ -68,6 +68,14 @@ type Querier interface {
 	Select(sortSeries bool, hints *SelectHints, matchers ...*labels.Matcher) (SeriesSet, Warnings, error)
 }
 
+// ConcurrentQuerier augments Querier to access series concurrently when needed.
+type ConcurrentQuerier interface {
+	Querier
+
+	// Exec processes the aggregated requests. Should only be called once.
+	Exec() (Warnings, error)
+}
+
 // A ChunkQueryable handles queries against a storage.
 // Use it when you need to have access to samples in encoded format.
 type ChunkQueryable interface {
