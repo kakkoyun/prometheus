@@ -18,9 +18,12 @@ import (
 	"fmt"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/prometheus/pkg/gate"
 	"github.com/prometheus/prometheus/pkg/labels"
 	"github.com/prometheus/prometheus/storage"
 )
+
+const remoteReadSelectConcurrencyLimit = 4
 
 var remoteReadQueries = prometheus.NewGaugeVec(
 	prometheus.GaugeOpts{
@@ -45,6 +48,7 @@ func QueryableClient(c *Client) storage.Queryable {
 			ctx:    ctx,
 			mint:   mint,
 			maxt:   maxt,
+			gate:   gate.New(remoteReadSelectConcurrencyLimit),
 			client: c,
 		}, nil
 	})
@@ -54,6 +58,7 @@ func QueryableClient(c *Client) storage.Queryable {
 type querier struct {
 	ctx        context.Context
 	mint, maxt int64
+	gate       *gate.Gate
 	client     *Client
 }
 
@@ -64,16 +69,28 @@ func (q *querier) Select(sortSeries bool, hints *storage.SelectHints, matchers .
 		return storage.ErrSeriesSet(err)
 	}
 
-	remoteReadGauge := remoteReadQueries.WithLabelValues(q.client.remoteName, q.client.url.String())
-	remoteReadGauge.Inc()
-	defer remoteReadGauge.Dec()
+	promise := make(chan storage.SeriesSet, 1)
+	go func() {
+		defer close(promise)
 
-	res, err := q.client.Read(q.ctx, query)
-	if err != nil {
-		return storage.ErrSeriesSet(fmt.Errorf("remote_read: %v", err))
-	}
+		if err := q.gate.Start(q.ctx); err != nil {
+			promise <- storage.ErrSeriesSet(fmt.Errorf("remote_read select gate: %w", err))
+			return
+		}
+		defer q.gate.Done()
 
-	return FromQueryResult(sortSeries, res)
+		remoteReadGauge := remoteReadQueries.WithLabelValues(q.client.remoteName, q.client.url.String())
+		remoteReadGauge.Inc()
+		defer remoteReadGauge.Dec()
+
+		res, err := q.client.Read(q.ctx, query)
+		if err != nil {
+			promise <- storage.ErrSeriesSet(fmt.Errorf("remote_read: %v", err))
+		}
+		promise <- FromQueryResult(sortSeries, res)
+	}()
+
+	return &asyncSeriesSet{ctx: q.ctx, promise: promise}
 }
 
 // LabelValues implements storage.Querier and is a noop.
